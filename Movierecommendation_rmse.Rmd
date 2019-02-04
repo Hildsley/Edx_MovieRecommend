@@ -1,0 +1,267 @@
+---
+title: "Movie Recommendation system"
+author: "Hildsley Noome"
+date: "17 January 2019"
+output:
+  word_document: default
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(caret)
+# Code creating the edx and validation sets
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- read.table(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                      col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(levels(movieId))[movieId],
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+set.seed(1)
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+validation <- temp %>% 
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+
+# Introduction 
+
+Movies are a popular form of entertainment, with a wide variety of genres. Different people have different preferences towards certain genres of which they are willing to
+spend time and money on. An abundance of movies are released every year and some may be excellent, while some may not fit the viewer's taste. Therefore reviews and ratings of movies could indicate whether a movie would be of good quality or one a specific viewer would enjoy watching. Grouplens is 
+a research lab that makes data available regarding ratings of movies. Datasets containing this kind of information could be used for research and to gain insight 
+regarding movies and how different people may enjoy different kinds of movies. 
+
+Below is an example of the data that is collected and details thereof.
+
+``` {r head_edx , echo = FALSE}
+
+head(edx, n = 10)
+
+```
+
+Movies are rated very differently between different people due to overall movie quality and personal taste. Below is a chart showing the average rating for 
+the movies contained in the dataset.
+
+```{r avg_movie , echo = FALSE}
+edx %>% group_by(movieId) %>% summarise(avg_rating = sum(rating)/n()) %>% 
+  ggplot(aes( x = avg_rating)) + geom_histogram(bins = 30, fill = "navy") +
+  ggtitle(label = "Average Rating For Different Movies") +
+  xlab(label = "Average Movie Rating") +
+  ylab(label = "Movie Count")
+```
+
+Due to these differences in ratings, many attempts are made to predict the rating a viewer may give due to different reasons. Therefore this report investigates 
+how viewers may rate movies and how closely one can predict these ratings.
+
+## Executive summary 
+
+The goal of this report is to build a model which can predict a rating that will be given by a user for a certain movie. This model will be built and trained on the dataset
+that was mentioned in the introduction. This model includes three variables that affect the predicted rating, the mean, the movie-specific effect and the user-specific effect.
+This model's accuracy is measured by the root mean squared error (RMSE) analysis technique. The final model that was trained was tested on a validation dataset of which no training was done beforehand.
+
+# Methods
+## Step 1:
+A common measure of how close predictions are is the root mean squared error (RMSE).
+This calculation will be used as a measure of the overall accuracy of the predictions compared to the actual ratings. This piece of code generates a function RMSE which will be used to calculate the RMSE for the model as it is built and improved. 
+
+```{r rmse, echo=TRUE}
+RMSE <- function(predicted_ratings, actual_ratings) {
+  sqrt(mean((actual_ratings-predicted_ratings)^2))
+  }
+```
+
+##Step 2:
+```{r mean, echo=FALSE}
+mu <- mean(edx$rating)
+```
+As shown in the plot in the introduction, most of the ratings lie between 3 and 4. The average rating across the dataset equals `r mean(edx$rating)`.
+
+The mean across the dataset will be the first part of the prediction, hence the first variable.
+The model's RMSE using only the mean as the prediction equals `r RMSE(mu,edx$rating)`.
+
+##Step 3: 
+The movie averages could be a powerful predictor as shown in the figure above for the average movie
+ratings for all movies. Although most movies are rated between 3 and 4, there are still many movies more than 4 and less than 3. To possibly improve the RMSE value, the movie-specific average ratings that deviate from the mean are calculated as b_m (the difference between mu and movie average rating).
+This deviation includes the movie-specific averages as a predictor.
+
+The following code calculates b_m for each movie.
+    ```{r b_m, echo = TRUE}
+    b_m <- edx %>% group_by(movieId) %>% summarise(b_m = sum(rating - mu)/n())
+    head(b_m)
+```
+
+The following code will then calculate the associated predictions after b_m has been calculated.
+```{r pred_b_m, echo=TRUE}
+  predicted_ratings_b_m <- edx %>% left_join(b_m , by = "movieId") %>% mutate(pred = mu + b_m) %>% .$pred 
+```
+
+The model including the movie effects' RMSE equals `r RMSE(predicted_ratings_b_m,edx$rating)`.
+
+This model improved the RMSE value compared to using only the mean as a predictor from `r RMSE(mu,edx$rating)` to `r RMSE(predicted_ratings_b_m,edx$rating)`
+
+##Step 4:
+The users' personal taste and the likelihood of giving ratings could also be a powerful predictor. The following plot shows the frequency of users' 
+average rating.
+```{r user_avg, echo=FALSE}
+edx %>% group_by(userId) %>% summarise(avg_rating = mean(rating)) %>% 
+  ggplot(aes(x = avg_rating)) +
+  geom_histogram(bins = 30, fill = "navy") +
+  ggtitle( label = "Average Rating For Individual Users") +
+  xlab(label = "Average User Rating") +
+  ylab(label = "User Count")
+```
+
+This plot shows a similar trend when compared to the average movie rating plot in the introduction. Although most user's average rating is approximately 4, there are quite a few that are a lot less or more than 4.
+Each user's specific effect will be determined by calculating the difference between 
+the mean and the overall rating for each user's average rating given across al of their ratings for different movies. This value will be denoted as b_u.
+
+The following code will calculate the user's specific effect.
+```{r b_u_seperate, echo=TRUE}
+b_u_seperate <- edx %>% group_by(userId) %>% summarise(b_u = mean(rating - mu))
+```
+
+The following code will then calculate the associated predictions after b_u has been calculated.
+```{r pred_u , echo= TRUE}
+predicted_ratings_b_u <- edx %>% left_join(b_u_seperate, by = "userId") %>% mutate(pred = mu + b_u) %>% .$pred
+```
+
+The model including the mean and user's effect RMSE equals `r RMSE(predicted_ratings_b_u,edx$rating)`.
+
+Following the three different steps that lead to predictions we have the following RMSE's:
+ Mean Predictions = `r RMSE(mu,edx$rating)`
+ 
+ Movie effects = `r RMSE(predicted_ratings_b_m,edx$rating)`
+ 
+ User effects = `r RMSE(predicted_ratings_b_u,edx$rating)`
+ 
+##Step 5:
+For the following predictions, the movie effect and user effect was combined.
+
+The following code will calculate both the movie effect and the user effect, and then determine the associated predictions.
+```{r pred_both}
+b_m <- edx %>% group_by(movieId) %>% summarise(b_m = sum(rating - mu)/n())
+b_u <- edx %>% left_join(b_m , by = "movieId") %>% group_by(userId) %>% summarise(b_u = mean(rating - mu - b_m))
+predicted_ratings_both <- edx %>% left_join(b_m, by = "movieId") %>% left_join(b_u , by = "userId") %>% mutate(pred = mu + b_m + b_u) %>% .$pred
+```
+ 
+Following the combined effects the RMSE value decreased to `r RMSE(predicted_ratings_both,edx$rating)`.
+
+##Step 6
+After careful evaluation of the predicted ratings, the maximum predicted value was `r max(predicted_ratings_both)` while
+the minimum predicted value was `r min(predicted_ratings_both)`. These values do not make sense because the highest rating
+a user is allowed is 5 and the lowest 0. Therefore these values should be changed accordingly.
+
+The following code changes predictions above 5 to be exactly 5 and those below 0 to be exactly 0.
+```{r trimming, echo = TRUE}
+for (x in 1:length(predicted_ratings_both)) {
+  if (predicted_ratings_both[x] > 5) predicted_ratings_both[x] = 5   # changes ratings to a 5 for those above 5 predicted
+  else if (predicted_ratings_both[x] < 0) predicted_ratings_both[x] = 0 # changes ratings to 0 for predicted less than 0 
+}
+```
+
+The RMSE value now slightly decreased to `r RMSE(predicted_ratings_both,edx$rating)`.
+
+##Step 7 
+After careful inspection of the b_m and b_u values, it was found that movies with a low number of ratings had the biggest values
+of b_m and b_u. Therefore predictions of these movies would yield more inaccurate results.
+
+```{r reg_top}
+edx %>% group_by(title) %>% summarise(b_m = sum(rating - mu)/n(),number_ratings = n()) %>% top_n(b_m,n = 10) %>% knitr::kable()
+```
+
+```{r reg_bot}
+edx %>% group_by(title) %>% summarise(b_m = sum(rating - mu)/n(),number_ratings = n()) %>% top_n(b_m,n = -10) %>% knitr::kable()
+```
+
+To improve the model the b_m and b_u values will be regularised, taking into account the number of ratings.
+The following piece of code calculates the optimal penalty value of lambda that will shrink the b_m and b_u
+values towards zero. Higher values of lambda will shrink the values more.
+```{r regularization_test}
+
+lambda <- seq(0,3,0.1) # different values of lambda to test
+
+rmses_reg_both <- sapply(lambda, function(l){
+  mu <- mean(edx$rating)
+  b_m <- edx %>% group_by(movieId) %>% summarise(b_m = sum(rating - mu)/ (n()+l)) # regularizes movies first
+   b_u <- edx %>% left_join(b_m, by = "movieId") %>% group_by(userId) %>% summarise(b_u = sum(rating - mu - b_m)/(n()+l)) # regularizes users second
+predicted_ratings_reg_both <- edx %>% left_join(b_m, by = "movieId") %>% left_join(b_u , by = "userId") %>% mutate(pred = mu + b_m + b_u) %>% .$pred #prediction values
+RMSE(predicted_ratings_reg_both,edx$rating)
+})
+
+```
+
+The following plot shows the RMSE for the different values of lambda.
+```{r plot_reg, echo=FALSE}
+plot(lambda,rmses_reg_both)
+```
+
+The value of lambda that minimizes the RMSE equals `r lambda[which.min(rmses_reg_both)]`. This value will be 
+used for the prediction model.
+
+The following code calculates the regularized b_m and b_u with the associated predictions.
+```{r regularization}
+lambda_pred = lambda[which.min(rmses_reg_both)]
+  
+  b_m_reg <- edx %>% group_by(movieId) %>% summarise( b_m = sum(rating - mu)/ (n()+lambda_pred) ) # regularizes movies' effect
+b_u_reg <- edx %>% left_join(b_m, by = "movieId") %>% group_by(userId) %>% summarise(b_u = sum(rating - mu - b_m)/(n()+lambda_pred)) # regularizes users' effect
+predicted_ratings_reg_both <- edx %>% left_join(b_m, by = "movieId") %>% left_join(b_u , by = "userId") %>% mutate(pred = mu + b_m + b_u) %>% .$pred # prediction values
+
+for (x in 1:length(predicted_ratings_reg_both)) {
+  if (predicted_ratings_reg_both[x] > 5) predicted_ratings_reg_both[x] = 5   # changes ratings to a 5 for those above 5 predicted
+  else if (predicted_ratings_reg_both[x] < 0) predicted_ratings_reg_both[x] = 0 # changes ratings to 0 for predicted less than 0 
+}
+
+```
+
+The RMSE following regularization equals `r RMSE(predicted_ratings_reg_both,edx$rating)`
+
+The model's predicted rating depends on three variables, the mean, the movie-specific effect and the user-specific effect. Each of these three variables will , therefore, contribute to the final prediction of the model.
+
+# Results
+The prediction model was built given a subset of an entire dataset containing 90% of the data. This model was evaluated on the validation subset of the data which no training or testing was done.
+
+The following code will test the RMSE of the model given the validation dataset.
+```{r validation, echo=TRUE}
+predict_val <- validation %>% left_join(b_m_reg , by = "movieId") %>% left_join(b_u_reg , by = "userId") %>% mutate(pred = mu + b_m + b_u) %>% .$pred
+
+for (x in 1:length(predict_val)) {
+  if (predict_val[x] > 5) predict_val[x] = 5
+  else if (predict_val[x] < 0) predict_val[x] = 0
+}
+
+rmse_result_val <- RMSE(predict_val,validation$rating)
+
+```
+
+The RMSE of the model on the validation dataset equals `r rmse_result_val`.
+
+This value compares excellently with the model that was built on the training dataset.
+
+# Conclusion
+
+The prediction model's RMSE value is relatively good. This model only includes three variables and could possibly be improved in the future by adding more 
+variables or by using other techniques either in conjunction or from another point entirely. Models predicting ratings will aid in research and help companies in the movies
+industry to make more informed choices regarding which types of movies are more likely to get better ratings, or even to expand on this to improve the ratio between budget spent and overall ratings versus their gross profit. Models like these could be very useful if their results are understood and if the information gained is used intelligently.
+
+
+
+
